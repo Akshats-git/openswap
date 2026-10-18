@@ -626,13 +626,19 @@ impl Wallet {
         Ok(bond_value)
     }
 
-    /// Coins that coin selection may draw on but the backend has not confirmed yet.
+    /// Coins that coin selection could draw on once they confirm: still in the
+    /// mempool, and neither locked nor reserved by a swap.
     pub(crate) fn unconfirmed_spendable_utxos(&self) -> Vec<ListUnspentResultEntry> {
+        let locked: HashSet<OutPoint> = self.list_lock_unspent().into_iter().collect();
         self.list_descriptor_utxo_spend_info()
             .into_iter()
             .chain(self.list_swept_incoming_swap_utxos())
             .map(|(utxo, _)| utxo)
             .filter(|utxo| utxo.confirmations == 0)
+            .filter(|utxo| {
+                let outpoint = OutPoint::new(utxo.txid, utxo.vout);
+                !locked.contains(&outpoint) && !self.is_swap_reserved(&outpoint)
+            })
             .collect()
     }
 
@@ -1213,7 +1219,7 @@ mod test {
     }
 
     /// A seed coin of `sats` with `confirmations`, as the UTXO cache holds it.
-    fn cached_seed_coin(wallet: &mut Wallet, n: u8, sats: u64, confirmations: u32) {
+    fn cached_seed_coin(wallet: &mut Wallet, n: u8, sats: u64, confirmations: u32) -> OutPoint {
         let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
         let amount = Amount::from_sat(sats);
         wallet.store.utxo_cache.insert(
@@ -1241,6 +1247,7 @@ mod test {
                 },
             ),
         );
+        outpoint
     }
 
     /// A pending bond is rebroadcast unchanged until it confirms, so it must
@@ -1252,6 +1259,12 @@ mod test {
         let mut wallet = test_wallet(&dir.path().join("wallet"));
         cached_seed_coin(&mut wallet, 1, 60_000, 1);
         cached_seed_coin(&mut wallet, 2, 1_000_000, 0);
+        // Pending coins that confirming would not free: coin selection skips a
+        // locked coin and one a swap holds, so neither can fund the bond.
+        let locked = cached_seed_coin(&mut wallet, 3, 500_000, 0);
+        wallet.lock_utxos(&[locked]);
+        let reserved = cached_seed_coin(&mut wallet, 4, 700_000, 0);
+        wallet.reserve_swap_locks("swap", &[reserved]);
 
         let pending: Vec<_> = wallet
             .unconfirmed_spendable_utxos()
