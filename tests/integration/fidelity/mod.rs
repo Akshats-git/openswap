@@ -1,8 +1,10 @@
 //! Fidelity bonds: creation and redemption, spending rules, auto-renewal,
-//! restarts with an unconfirmed bond, and a bond with an invalid timelock.
+//! restarts with an unconfirmed bond, a deposit replaced before it confirms,
+//! and a bond with an invalid timelock.
 
 mod creation;
 mod renewal;
+mod replaced_deposit;
 mod restart;
 mod spending;
 mod timelock_violation;

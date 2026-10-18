@@ -14,7 +14,7 @@ use bitcoin::{
     secp256k1::{Keypair, Message, Secp256k1},
     Address, Amount, OutPoint, PublicKey, ScriptBuf, Transaction, Txid,
 };
-use bitcoind::bitcoincore_rpc::json::GetTransactionResultDetailCategory;
+use bitcoind::bitcoincore_rpc::json::{GetTransactionResultDetailCategory, ListUnspentResultEntry};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -626,6 +626,16 @@ impl Wallet {
         Ok(bond_value)
     }
 
+    /// Coins that coin selection may draw on but the backend has not confirmed yet.
+    pub(crate) fn unconfirmed_spendable_utxos(&self) -> Vec<ListUnspentResultEntry> {
+        self.list_descriptor_utxo_spend_info()
+            .into_iter()
+            .chain(self.list_swept_incoming_swap_utxos())
+            .map(|(utxo, _)| utxo)
+            .filter(|utxo| utxo.confirmations == 0)
+            .collect()
+    }
+
     /// Create a new fidelity bond with given amount and absolute height based locktime.
     /// This function creates the fidelity transaction, signs and broadcast it.
     /// Upon confirmation it stores the fidelity information in the wallet data.
@@ -641,12 +651,20 @@ impl Wallet {
     ) -> Result<(u32, Txid), WalletError> {
         let (index, fidelity_addr, fidelity_pubkey) = self.get_next_fidelity_address(locktime)?;
 
+        // A pending bond is rebroadcast as the same bytes until it confirms,
+        // which only works while its inputs exist. An unconfirmed coin can still
+        // be replaced or evicted, so a bond spends confirmed coins only.
+        let unconfirmed = self
+            .unconfirmed_spendable_utxos()
+            .iter()
+            .map(|utxo| OutPoint::new(utxo.txid, utxo.vout))
+            .collect();
         let coins = self.coin_select(
             amount,
             feerate,
             infer_address_type(&fidelity_addr.script_pubkey()),
             None,
-            None,
+            Some(unconfirmed),
         )?;
         let outputs = vec![(fidelity_addr, amount)];
 
@@ -917,7 +935,7 @@ impl Wallet {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::wallet::{api::test_support::test_wallet, BondHint, RestoreOptions};
+    use crate::wallet::{api::test_support::test_wallet, BondHint, RestoreOptions, UTXOSpendInfo};
     use bitcoin::{bip32::Xpriv, secp256k1::SecretKey, transaction::Version, NetworkKind, TxOut};
     use bitcoind::tempfile::tempdir;
 
@@ -1192,6 +1210,77 @@ mod test {
             bond_maturity_time(passed, tip_height, tip_time),
             Err(FidelityError::BondLocktimeExpired)
         ));
+    }
+
+    /// A seed coin of `sats` with `confirmations`, as the UTXO cache holds it.
+    fn cached_seed_coin(wallet: &mut Wallet, n: u8, sats: u64, confirmations: u32) {
+        let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let amount = Amount::from_sat(sats);
+        wallet.store.utxo_cache.insert(
+            outpoint,
+            (
+                ListUnspentResultEntry {
+                    txid: outpoint.txid,
+                    vout: outpoint.vout,
+                    address: None,
+                    label: None,
+                    redeem_script: None,
+                    witness_script: None,
+                    script_pub_key: ScriptBuf::from_bytes(vec![0x51]),
+                    amount,
+                    confirmations,
+                    spendable: true,
+                    solvable: true,
+                    descriptor: None,
+                    safe: true,
+                },
+                UTXOSpendInfo::SeedCoin {
+                    path: "m/0/0".into(),
+                    input_value: amount,
+                    address_type: AddressType::P2WPKH,
+                },
+            ),
+        );
+    }
+
+    /// A pending bond is rebroadcast unchanged until it confirms, so it must
+    /// not spend a coin that can still be replaced. Funds that are only
+    /// unconfirmed count as missing, and the bond fails before it signs.
+    #[test]
+    fn a_bond_never_spends_an_unconfirmed_coin() {
+        let dir = tempdir().unwrap();
+        let mut wallet = test_wallet(&dir.path().join("wallet"));
+        cached_seed_coin(&mut wallet, 1, 60_000, 1);
+        cached_seed_coin(&mut wallet, 2, 1_000_000, 0);
+
+        let pending: Vec<_> = wallet
+            .unconfirmed_spendable_utxos()
+            .iter()
+            .map(|utxo| utxo.amount.to_sat())
+            .collect();
+        assert_eq!(pending, vec![1_000_000]);
+
+        let err = wallet
+            .create_fidelity(
+                Amount::from_sat(500_000),
+                LockTime::from_height(1000).unwrap(),
+                None,
+                1.0,
+                AddressType::P2TR,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WalletError::InsufficientFund {
+                    available: 60_000,
+                    ..
+                }
+            ),
+            "only the confirmed coin may count, got {:?}",
+            err
+        );
+        assert!(wallet.get_fidelity_bonds().is_empty());
     }
 
     #[test]

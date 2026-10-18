@@ -353,6 +353,12 @@ This will launch `makerd` and connect it to the Bitcoin RPC core running on its 
   To fund the wallet, you can use [this faucet](https://faucet.openswap.live/).
   We suggest taking `0.01 BTC` testcoins as the extra amount will be used in doing wallet related operations in [maker-cli demo](./maker-cli.md)
 
+  The bond is only built from confirmed coins, because it is rebroadcast unchanged until it confirms and an unconfirmed coin can still be replaced. Once your deposit is in the mempool, `makerd` stops asking for more and waits:
+
+  ```bash
+  INFO openswap::maker::api - Waiting for 0.01000000 BTC of unconfirmed funds to confirm before creating the fidelity bond
+  ```
+
 - **Regular Wallet Sync**: The server syncs the wallet every 10 seconds to detect incoming funds.
 
 - **Fidelity Transaction Creation**: Once the server detects sufficient funding (for new setups), it will automatically create and broadcast a fidelity transaction using the funding UTXOs:

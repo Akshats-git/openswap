@@ -1438,7 +1438,7 @@ impl MakerServer {
                             log::warn!("Insufficient funds to create fidelity bond.");
                             // Bond change must also fund the first swap and stay at our minimum
                             // swap size, or the liquidity check right after keeps us off the market.
-                            let (op_return_len, swap_feerate) = {
+                            let (op_return_len, swap_feerate, unconfirmed) = {
                                 let wallet = lock_debug!(self.wallet.read())
                                     .map_err(|_| MakerError::General("Failed to lock wallet"))?;
                                 let op_return = wallet
@@ -1454,7 +1454,13 @@ impl MakerServer {
                                         MIN_RELAY_FEE_RATE
                                     }
                                 };
-                                (op_return.len() as u64, rate)
+                                // The bond waits for these to confirm; see `create_fidelity`.
+                                let unconfirmed = wallet
+                                    .unconfirmed_spendable_utxos()
+                                    .iter()
+                                    .map(|utxo| utxo.amount.to_sat())
+                                    .sum::<u64>();
+                                (op_return.len() as u64, rate, unconfirmed)
                             };
                             // Coin selection priced only the bond output and coins we hold. The tx
                             // also carries the OP_RETURN, P2TR change and the deposit as a P2TR input.
@@ -1471,11 +1477,17 @@ impl MakerServer {
                                     .ok_or(MakerError::General(
                                         "Fee settings cannot price the fidelity funding amount",
                                     ))?;
-                            log::info!(
-                                "Send at least {:.8} BTC to {:?} (fidelity bond + fees + minimum swap liquidity) to be visible in the market",
-                                Amount::from_sat(needed).to_btc(),
-                                addr
-                            );
+                            match needed.saturating_sub(unconfirmed) {
+                                0 => log::info!(
+                                    "Waiting for {:.8} BTC of unconfirmed funds to confirm before creating the fidelity bond",
+                                    Amount::from_sat(unconfirmed).to_btc()
+                                ),
+                                missing => log::info!(
+                                    "Send at least {:.8} BTC to {:?} (fidelity bond + fees + minimum swap liquidity) to be visible in the market",
+                                    Amount::from_sat(missing).to_btc(),
+                                    addr
+                                ),
+                            }
 
                             log::info!("Next sync in {} secs", SYNC_INTERVAL.as_secs());
                             if !self.wait_for_shutdown(SYNC_INTERVAL) {
