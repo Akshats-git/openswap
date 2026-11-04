@@ -79,6 +79,10 @@ enum Commands {
         /// Show only this swap, in full.
         #[arg(long, short = 's')]
         swap_id: Option<String>,
+        /// Most swaps to list, newest first. The default is 100, the most 10000.
+        /// The totals always cover every swap.
+        #[arg(long, short = 'n')]
+        limit: Option<u32>,
     },
     /// Verify the deniability proof for a specific swap.
     VerifyDeniability {
@@ -175,8 +179,8 @@ fn main() -> Result<(), MakerError> {
         Commands::SyncWallet => {
             send_rpc_req(stream, &rpc_cookie, RpcMsgReq::SyncWallet)?;
         }
-        Commands::ListSwaps { swap_id } => {
-            send_rpc_req(stream, &rpc_cookie, RpcMsgReq::ListSwaps { swap_id })?;
+        Commands::ListSwaps { swap_id, limit } => {
+            send_rpc_req(stream, &rpc_cookie, RpcMsgReq::ListSwaps { swap_id, limit })?;
         }
         Commands::VerifyDeniability { swap_id } => {
             send_rpc_req(
@@ -208,6 +212,8 @@ fn main() -> Result<(), MakerError> {
     Ok(())
 }
 
+/// Sends one request and prints the reply. An error reply goes to stderr and
+/// ends the process with status 1.
 fn send_rpc_req(
     mut stream: TcpStream,
     rpc_cookie: &str,
@@ -229,6 +235,10 @@ fn send_rpc_req(
 
     if matches!(response, RpcMsgResp::Pong) {
         println!("success");
+    } else if let RpcMsgResp::ServerError(error) = &response {
+        // A refused request must not look like a success to a script.
+        eprintln!("{error}");
+        std::process::exit(1);
     } else {
         println!("{response}");
     }
