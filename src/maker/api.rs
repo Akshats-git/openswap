@@ -1931,7 +1931,7 @@ impl MakerServer {
         let replay_open = lock_debug!(self.last_settled.lock())
             .map_err(|_| MakerError::MutexPossion)?
             .is_some_and(|at| now.saturating_duration_since(at) < HANDOVER_REPLAY_GRACE);
-        if left == 0 && replay_open {
+        if left == 0 && replay_open && now < *deadline {
             return Ok(());
         }
         if left == 0 {
@@ -4496,7 +4496,7 @@ pub(crate) mod tests {
     #[test]
     fn serving_a_replay_restarts_the_grace_window() {
         let dir = tempfile::tempdir().unwrap();
-        let (maker, _state) = maker_with_a_live_swap(dir.path());
+        let maker = compat_test_maker(dir.path(), Vec::new());
         *maker.last_settled.lock().unwrap() = Some(Instant::now() - super::HANDOVER_REPLAY_GRACE);
         let request = crate::protocol::common_messages::PrivateKeyHandover {
             id: "replayed".into(),
@@ -4517,6 +4517,22 @@ pub(crate) mod tests {
         maker.start_drain();
         maker.stop_if_drained().unwrap();
         assert!(!maker.shutdown.load(Ordering::SeqCst));
+    }
+
+    /// The replay window never outlasts the drain limit, however recent the
+    /// last settled swap or replay is.
+    #[test]
+    fn replay_grace_does_not_outlast_the_drain_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let maker = compat_test_maker(dir.path(), Vec::new());
+        maker.start_drain_within(Duration::from_secs(10));
+        *maker.last_settled.lock().unwrap() = Some(Instant::now());
+        maker.stop_if_drained().unwrap();
+        assert!(!maker.shutdown.load(Ordering::SeqCst), "inside the limit");
+        maker
+            .stop_if_drained_at(Instant::now() + Duration::from_secs(11))
+            .unwrap();
+        assert!(maker.shutdown.load(Ordering::SeqCst), "past the limit");
     }
 
     /// A taker that lost its handover reply retries after a settled swap. The

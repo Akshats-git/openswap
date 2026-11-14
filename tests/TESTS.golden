@@ -79,6 +79,9 @@ openswap maker::api::tests::maker_config_reads_the_docker_compose_config
 openswap maker::api::tests::maker_config_refuses_values_it_cannot_read
 openswap maker::api::tests::maker_config_rejects_fidelity_amount_below_the_discovery_floor
 openswap maker::api::tests::maker_init_refuses_bad_fee_pcts
+openswap maker::api::tests::replay_grace_covers_the_takers_retry_path
+openswap maker::api::tests::replay_grace_does_not_outlast_the_drain_deadline
+openswap maker::api::tests::serving_a_replay_restarts_the_grace_window
 openswap maker::api::tests::shutdown_join_releases_pool_lock_and_drains_late_child
 openswap maker::api::tests::shutdown_signal_latches_request_and_rearms_backend_after_joins
 openswap maker::api::tests::unpriceable_fees_are_refused_before_the_bond
